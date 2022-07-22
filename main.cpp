@@ -1,7 +1,5 @@
 #include <iostream>
 
-#include "SharedMutex.h"
-#include "ThreadPool.h"
 #include "MessageQueue.h"
 
 struct MyEvent
@@ -78,8 +76,6 @@ int main() {
 	});
 
 	auto i13 = qu.subscribe<std::shared_ptr<MyEvent>>(std::make_shared<MyMessage>());
-
-	std::cout << (std::type_index(typeid(std::string)) == std::type_index(typeid(std::string))) << std::endl;
 
 	qu.publish("3", 5, false);
 	qu.publish("3", 10, true);
