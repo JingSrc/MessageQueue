@@ -1,2 +1,2 @@
 # MessageQueue
-Message Queue In Memory
+In-memory message queues provide publishing and subscribing of messages。
