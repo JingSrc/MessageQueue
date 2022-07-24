@@ -15,7 +15,7 @@ public:
 	explicit MyMessage(bool once = false)
 		: IMessageHandler<std::shared_ptr<MyEvent>>{ "abc", once } {}
 
-	virtual void const handle(const message_pointer &message) override
+    virtual void handle(const message_pointer &message) override
 	{
 		auto ev = message->payload();
 		std::cout << "my event: " << ev->i << ev->b << std::endl;
@@ -83,7 +83,7 @@ int main() {
 	qu.publish("3", "abcde", true);
 	qu.publish("abc", std::make_shared<MyEvent>(), true);
 
-	std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     return 0;
 }
