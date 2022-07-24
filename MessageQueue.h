@@ -76,7 +76,7 @@ public:
         }
     }
 
-    virtual void const handle(const message_pointer &message) = 0;
+    virtual void handle(const message_pointer &message) = 0;
 
 private:
     bool once_;
@@ -95,7 +95,7 @@ public:
             : IMessageHandler<T>{topic, once}, handler_{fn} {}
     virtual ~MessageHandlerDefaultImpl() = default;
 
-    virtual void const handle(const message_pointer &message) override
+    virtual void handle(const message_pointer &message) override
     {
         handler_(message);
     }
@@ -114,7 +114,7 @@ public:
 };
 
 template<typename T>
-class MessageQueueType : public IMessageQueueType
+class MessageQueueType final : public IMessageQueueType
 {
 public:
     using value_type          = T;
@@ -131,7 +131,7 @@ public:
     explicit MessageQueueType(const std::shared_ptr<ThreadPool> &threads)
         : threads_{threads} {}
 
-    ~MessageQueueType() = default;
+    virtual ~MessageQueueType() override = default;
 
     MessageQueueType(MessageQueueType&) = delete;
     MessageQueueType(MessageQueueType&&) = delete;
@@ -257,19 +257,15 @@ public:
     template<typename T>
     bool publish(const std::string &topic, T value, bool is_async)
     {
-		shared_lock<shared_mutex> lock{ mutex_ };
-		auto qu = queue_type<T>::get(this);
-		if (qu) {
-			return qu->publish(topic, value, is_async);
-		}
-		return false;
+        auto ptr = std::make_shared<typename MessageQueueType<T>::message_type>(topic, value);
+        return publish<T>(ptr, is_async);
     }
 
     template<typename T>
     bool publish(const typename MessageQueueType<T>::message_pointer &ptr, bool is_async = true)
     {
 		shared_lock<shared_mutex> lock{ mutex_ };
-		auto qu = queue_type<T>::get(this);
+        auto qu = get_queue<T>();
 		if (qu) {
 			return qu->publish(ptr, is_async);
 		}
@@ -280,7 +276,7 @@ public:
     int subscribe(typename MessageQueueType<T>::message_handler_ptr handler)
     {
         unique_lock<shared_mutex> lock{mutex_};
-		auto qu = queue_type<T>::get_default(this);
+        auto qu = get_queue_default<T>();
 		return qu->subscribe(handler);
     }
 
@@ -288,7 +284,7 @@ public:
     int subscribe(const std::string &topic, typename MessageQueueType<T>::message_handler_fn handler, bool once = false)
     {
 		unique_lock<shared_mutex> lock{ mutex_ };
-		auto qu = queue_type<T>::get_default(this);
+        auto qu = get_queue_default<T>();
 		return qu->subscribe(topic, handler, once);
     }
 
@@ -296,7 +292,7 @@ public:
     void unsubscribe(int index)
     {
         unique_lock<shared_mutex> lock{mutex_};
-		auto qu = queue_type<T>::get(this);
+        auto qu = get_queue<T>();
 		if (qu) {
 			qu->unsubscribe(index);
 			if (qu->empty()) {
@@ -306,73 +302,75 @@ public:
     }
 
 private:
-	template<typename T>
-	struct queue_type
-	{
-		using value_type = T;
-		using message_queuq_type = MessageQueueType<value_type>;
+    template<typename T>
+    std::shared_ptr<MessageQueueType<T>> get_queue()
+    {
+        using message_queue_type = MessageQueueType<T>;
 
-		static std::shared_ptr<message_queuq_type> get(MessageQueue *mq)
-		{
-			std::shared_ptr<message_queuq_type> ptr;
+        std::shared_ptr<message_queue_type> ptr;
 
-			auto tp = std::type_index(typeid(T));
-			auto it = mq->queues_.find(tp);
-			if (it != mq->queues_.end()) {
-				ptr = std::dynamic_pointer_cast<message_queuq_type>(it->second);
-			}
+        auto tp = std::type_index(typeid(T));
+        auto it = queues_.find(tp);
+        if (it != queues_.end()) {
+            ptr = std::dynamic_pointer_cast<message_queue_type>(it->second);
+        }
 
-			return ptr;
-		}
+        return ptr;
+    }
 
-		static std::shared_ptr<message_queuq_type> get_default(MessageQueue *mq)
-		{
-			auto qu = queue_type<T>::get(mq);
-			if (!qu) {
-				qu = std::make_shared<message_queuq_type>(mq->threads_);
-				mq->queues_[std::type_index(typeid(T))] = qu;
-			}
+    template<typename T>
+    std::shared_ptr<MessageQueueType<T>> get_queue_default()
+    {
+        auto qu = get_queue<T>();
+        if (!qu) {
+            qu = std::make_shared<MessageQueueType<T>>(threads_);
+            queues_[std::type_index(typeid(T))] = qu;
+        }
 
-			return qu;
-		}
-	};
-
-	template<>
-	struct queue_type<char *>
-	{
-		using value_type = std::string;
-		using message_queuq_type = MessageQueueType<value_type>;
-
-		static std::shared_ptr<message_queuq_type> get(MessageQueue *mq)
-		{
-			return queue_type<value_type>::get(mq);
-		}
-
-		static std::shared_ptr<message_queuq_type> get_default(MessageQueue *mq)
-		{
-			return queue_type<value_type>::get_default(mq);
-		}
-	};
-
-	template<>
-	struct queue_type<const char *>
-	{
-		using value_type = std::string;
-		using message_queuq_type = MessageQueueType<value_type>;
-
-		static std::shared_ptr<message_queuq_type> get(MessageQueue *mq)
-		{
-			return queue_type<value_type>::get(mq);
-		}
-
-		static std::shared_ptr<message_queuq_type> get_default(MessageQueue *mq)
-		{
-			return queue_type<value_type>::get_default(mq);
-		}
-	};
+        return qu;
+    }
 
 private:
     std::shared_ptr<ThreadPool> threads_;
     shared_mutex mutex_;
     std::unordered_map<std::type_index, std::shared_ptr<IMessageQueueType>> queues_;
 };
+
+template<>
+bool MessageQueue::publish<char *>(const std::string &topic, char *value, bool is_async)
+{
+    shared_lock<shared_mutex> lock{ mutex_ };
+    auto qu = get_queue<char *>();
+    if (qu) {
+        return qu->publish(topic, value, is_async);
+    }
+
+    auto cqu = get_queue<const char *>();
+    if (cqu) {
+        return cqu->publish(topic, value, is_async);
+    }
+
+    auto squ = get_queue<std::string>();
+    if (squ) {
+        return squ->publish(topic, value, is_async);
+    }
+
+    return false;
+}
+
+template<>
+bool MessageQueue::publish<const char *>(const std::string &topic, const char *value, bool is_async)
+{
+    shared_lock<shared_mutex> lock{ mutex_ };
+    auto cqu = get_queue<const char *>();
+    if (cqu) {
+        return cqu->publish(topic, value, is_async);
+    }
+
+    auto squ = get_queue<std::string>();
+    if (squ) {
+        return squ->publish(topic, value, is_async);
+    }
+
+    return false;
+}
