@@ -9,15 +9,23 @@
 #include "SharedMutex.h"
 #include "ThreadPool.h"
 
+#define MESSAGE_DISABLE_COPY(_ClassName_) \
+    _ClassName_(_ClassName_&) = delete; \
+    _ClassName_(_ClassName_&&) = delete; \
+    _ClassName_& operator=(_ClassName_&) = delete; \
+    _ClassName_& operator=(_ClassName_&&) = delete;
+
 template<class T>
-class Message
+class Message final
 {
+    MESSAGE_DISABLE_COPY(Message)
 public:
     using payload_type = T;
     using payload_timestamp = std::chrono::steady_clock::time_point;
 
     Message(const std::string &topic, payload_type payload)
             : topic_{topic}, payload_{payload}, timestamp_{std::chrono::steady_clock::now()} {}
+    ~Message() = default;
 
     const std::string &topic() const { return topic_; }
     const payload_timestamp &timestamp() const { return timestamp_; }
@@ -25,22 +33,19 @@ public:
     payload_type payload() const { return payload_; }
 
 private:
-    std::string topic_;
-    payload_type payload_;
+    std::string       topic_;
+    payload_type      payload_;
     payload_timestamp timestamp_;
 };
 
-class MessageHandlerIndex
+template<typename T>
+using MessagePointer = std::shared_ptr<Message<T>>;
+
+class MessageHandlerIndex final
 {
+    MESSAGE_DISABLE_COPY(MessageHandlerIndex)
 public:
     using index_type = int;
-
-    ~MessageHandlerIndex() = default;
-
-    MessageHandlerIndex(MessageHandlerIndex&) = delete;
-    MessageHandlerIndex(MessageHandlerIndex&&) = delete;
-    MessageHandlerIndex& operator=(MessageHandlerIndex&) = delete;
-    MessageHandlerIndex& operator=(MessageHandlerIndex&&) = delete;
 
     static index_type create_index()
     {
@@ -64,24 +69,23 @@ private:
 template<typename T>
 class IMessageHandler
 {
+    MESSAGE_DISABLE_COPY(IMessageHandler)
 public:
     using value_type      = T;
-    using message_type    = Message<value_type>;
-    using message_pointer = std::shared_ptr<message_type>;
+    using message_pointer = MessagePointer<value_type>;
 
     explicit IMessageHandler(const std::string &topic, bool once = false)
             : once_{once}, topic_{topic}, index_{MessageHandlerIndex::create_index()} {}
     virtual ~IMessageHandler() = default;
 
+    int index() const { return index_; }
     const std::string &topic() const { return topic_; }
     bool once() const { return once_; }
-    int index() const { return index_; }
 
     virtual void handle(const message_pointer &message) = 0;
     virtual void handle_p(const message_pointer &message)
     {
         std::unique_lock<std::mutex> lock{mutex_};
-
         if (once_ && called_) {
             return;
         }
@@ -91,11 +95,11 @@ public:
     }
 
 private:
-    bool once_;
-    bool called_{ false };
+    bool                            once_;
+    bool                            called_{false};
     MessageHandlerIndex::index_type index_{-1};
-    std::string topic_;
-    std::mutex mutex_;
+    std::string                     topic_;
+    std::mutex                      mutex_;
 };
 
 template<typename T>
@@ -130,13 +134,14 @@ public:
 template<typename T>
 class MessageQueueType final : public IMessageQueueType
 {
+    MESSAGE_DISABLE_COPY(MessageQueueType)
 public:
-    using value_type          = T;
-    using message_type        = Message<value_type>;
-    using message_pointer     = std::shared_ptr<message_type>;
-    using message_handler     = IMessageHandler<value_type>;
+    using value_type              = T;
+    using message_type            = Message<value_type>;
+    using message_pointer         = MessagePointer<value_type>;
+    using message_handler         = IMessageHandler<value_type>;
     using message_handler_pointer = std::shared_ptr<message_handler>;
-    using message_handler_funtion  = std::function<void(const message_pointer &)>;
+    using message_handler_funtion = std::function<void(const message_pointer &)>;
 
 private:
     using message_handlers = std::unordered_map<MessageHandlerIndex::index_type, message_handler_pointer>;
@@ -144,13 +149,7 @@ private:
 public:
     explicit MessageQueueType(const std::shared_ptr<ThreadPool> &threads)
             : threads_{threads} {}
-
     virtual ~MessageQueueType() override = default;
-
-    MessageQueueType(MessageQueueType&) = delete;
-    MessageQueueType(MessageQueueType&&) = delete;
-    MessageQueueType& operator=(MessageQueueType&) = delete;
-    MessageQueueType& operator=(MessageQueueType&&) = delete;
 
     virtual std::type_index type() const override { return std::type_index(typeid(value_type)); }
 
@@ -201,7 +200,7 @@ public:
 
     bool empty() const
     {
-        shared_lock<shared_mutex> lock{ mutex_ };
+        shared_lock<shared_mutex> lock{mutex_};
         return handlers_.empty();
     }
 
@@ -252,21 +251,18 @@ private:
     }
 
 private:
-    std::shared_ptr<ThreadPool> threads_;
-    mutable shared_mutex mutex_;
+    std::shared_ptr<ThreadPool>                       threads_;
+    mutable shared_mutex                              mutex_;
     std::unordered_map<std::string, message_handlers> handlers_;
 };
 
 class MessageQueue
 {
+    MESSAGE_DISABLE_COPY(MessageQueue)
 public:
     explicit MessageQueue(size_t threads = std::thread::hardware_concurrency())
             : threads_{new ThreadPool{threads}} {}
-
-    MessageQueue(MessageQueue&) = delete;
-    MessageQueue(MessageQueue&&) = delete;
-    MessageQueue& operator=(MessageQueue&) = delete;
-    MessageQueue& operator=(MessageQueue&&) = delete;
+    ~MessageQueue() = default;
 
     template<typename T>
     bool publish(const std::string &topic, T value, bool is_async)
@@ -359,16 +355,16 @@ bool MessageQueue::publish<char *>(const typename MessageQueueType<char *>::mess
         return qu->publish(ptr, is_async);
     }
 
-    auto cqu = get_queue<const char *>();
-    if (cqu) {
-        auto cptr = std::make_shared<Message<const char *>>(ptr->topic(), ptr->payload());
-        return cqu->publish(cptr, is_async);
+    auto cc_qu = get_queue<const char *>();
+    if (cc_qu) {
+        auto cc_ptr = std::make_shared<Message<const char *>>(ptr->topic(), ptr->payload());
+        return cc_qu->publish(cc_ptr, is_async);
     }
 
-    auto squ = get_queue<std::string>();
-    if (squ) {
-        auto sptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
-        return squ->publish(sptr, is_async);
+    auto str_qu = get_queue<std::string>();
+    if (str_qu) {
+        auto str_ptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
+        return str_qu->publish(str_ptr, is_async);
     }
 
     return false;
@@ -379,17 +375,16 @@ bool MessageQueue::publish<const char *>(const typename MessageQueueType<const c
 {
     shared_lock<shared_mutex> lock{ mutex_ };
 
-    auto cqu = get_queue<const char *>();
-    if (cqu) {
-        return cqu->publish(ptr, is_async);
+    auto cc_qu = get_queue<const char *>();
+    if (cc_qu) {
+        return cc_qu->publish(ptr, is_async);
     }
 
-    auto squ = get_queue<std::string>();
-    if (squ) {
-        auto sptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
-        return squ->publish(sptr, is_async);
+    auto str_qu = get_queue<std::string>();
+    if (str_qu) {
+        auto str_ptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
+        return str_qu->publish(str_ptr, is_async);
     }
 
     return false;
 }
-
