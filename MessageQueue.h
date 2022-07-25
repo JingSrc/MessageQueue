@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <unordered_map>
 #include <typeindex>
 #include <string>
@@ -29,23 +30,30 @@ private:
     payload_timestamp timestamp_;
 };
 
-class MessageHandlerCounter
+class MessageHandlerIndex
 {
 public:
-    operator int()
+    using index_type = int;
+
+    ~MessageHandlerIndex() = default;
+
+    MessageHandlerIndex(MessageHandlerIndex&) = delete;
+    MessageHandlerIndex(MessageHandlerIndex&&) = delete;
+    MessageHandlerIndex& operator=(MessageHandlerIndex&) = delete;
+    MessageHandlerIndex& operator=(MessageHandlerIndex&&) = delete;
+
+    static index_type create_index()
     {
-        return instance().counter_;
+        auto &inst = instance();
+        return inst.counter_++;
     }
 
-    MessageHandlerCounter &operator++(int)
-    {
-        instance().counter_++;
-        return *this;
-    }
+private:
+    MessageHandlerIndex() = default;
 
-    static MessageHandlerCounter &instance()
+    static MessageHandlerIndex &instance()
     {
-        static MessageHandlerCounter counter;
+        static MessageHandlerIndex counter;
         return counter;
     }
 
@@ -62,30 +70,36 @@ public:
     using message_pointer = std::shared_ptr<message_type>;
 
     explicit IMessageHandler(const std::string &topic, bool once = false)
-        : once_{once}, topic_{topic} {}
+            : once_{once}, topic_{topic}, index_{MessageHandlerIndex::create_index()} {}
     virtual ~IMessageHandler() = default;
 
     const std::string &topic() const { return topic_; }
     bool once() const { return once_; }
-
     int index() const { return index_; }
-    void set_index(int index)
-    {
-        if (index_ == -1) {
-            index_ = index;
-        }
-    }
 
     virtual void handle(const message_pointer &message) = 0;
+    virtual void handle_p(const message_pointer &message)
+    {
+        std::unique_lock<std::mutex> lock{mutex_};
+
+        if (once_ && called_) {
+            return;
+        }
+
+        handle(message);
+        called_ = true;
+    }
 
 private:
     bool once_;
-    int index_{-1};
+    bool called_{ false };
+    MessageHandlerIndex::index_type index_{-1};
     std::string topic_;
+    std::mutex mutex_;
 };
 
 template<typename T>
-class MessageHandlerDefaultImpl : public IMessageHandler<T>
+class MessageHandlerDefaultImpl final : public IMessageHandler<T>
 {
 public:
     using message_pointer = typename IMessageHandler<T>::message_pointer;
@@ -121,15 +135,15 @@ public:
     using message_type        = Message<value_type>;
     using message_pointer     = std::shared_ptr<message_type>;
     using message_handler     = IMessageHandler<value_type>;
-    using message_handler_ptr = std::shared_ptr<message_handler>;
-    using message_handler_fn  = std::function<void(const message_pointer &)>;
+    using message_handler_pointer = std::shared_ptr<message_handler>;
+    using message_handler_funtion  = std::function<void(const message_pointer &)>;
 
 private:
-    using message_handlers = std::unordered_map<int, message_handler_ptr>;
+    using message_handlers = std::unordered_map<MessageHandlerIndex::index_type, message_handler_pointer>;
 
 public:
     explicit MessageQueueType(const std::shared_ptr<ThreadPool> &threads)
-        : threads_{threads} {}
+            : threads_{threads} {}
 
     virtual ~MessageQueueType() override = default;
 
@@ -154,73 +168,73 @@ public:
         return do_publish(ptr);
     }
 
-    int subscribe(message_handler_ptr handler)
+    message_handler_pointer subscribe(message_handler_pointer handler)
     {
         unique_lock<shared_mutex> lock{mutex_};
-        auto &subscribers = subscribers_[handler->topic()];
-        handler->set_index(MessageHandlerCounter::instance()++);
-        subscribers[handler->index()] = handler;
-        return handler->index();
+        auto &h = handlers_[handler->topic()];
+        h[handler->index()] = handler;
+        return handler;
     }
 
-    int subscribe(const std::string &topic, message_handler_fn handler, bool once = false)
+    message_handler_pointer subscribe(const std::string &topic, message_handler_funtion handler, bool once = false)
     {
         auto ptr = std::make_shared<MessageHandlerDefaultImpl<T>>(topic, handler, once);
         return subscribe(ptr);
     }
 
-    void unsubscribe(int index)
+    void unsubscribe(message_handler_pointer handler)
     {
-        std::string topic;
-
         unique_lock<shared_mutex> lock{mutex_};
-        for (auto it = subscribers_.begin(); it != subscribers_.end(); ++it) {
-            auto handler = it->second.find(index);
-            if (handler != it->second.end()) {
-                topic = handler->second->topic();
-                it->second.erase(handler);
-                break;
-            }
-        }
 
-        if (!topic.empty()) {
-            auto it = subscribers_.find(topic);
-            if (it->second.empty()) {
-                subscribers_.erase(it);
+        auto it = handlers_.find(handler->topic());
+        if (it != handlers_.end()) {
+            auto &handlers = it->second;
+            auto hit = handlers.find(handler->index());
+            if (hit != handlers.end()) {
+                handlers.erase(hit);
+                if (handlers.empty()) {
+                    handlers_.erase(it);
+                }
             }
         }
     }
 
-	bool empty() const
-	{
-		shared_lock<shared_mutex> lock{ mutex_ };
-		return subscribers_.empty();
-	}
+    bool empty() const
+    {
+        shared_lock<shared_mutex> lock{ mutex_ };
+        return handlers_.empty();
+    }
 
 private:
-    bool do_publish(const std::string &topic, std::function<void(message_handler_ptr)> handler)
+    bool do_publish(const std::string &topic, std::function<void(message_handler_pointer)> handler)
     {
-        shared_lock<shared_mutex> lock{mutex_};
-        auto subscribers = subscribers_.find(topic);
-        if (subscribers != subscribers_.end()) {
-            for (auto it = subscribers->second.begin(); it != subscribers->second.end();) {
-                handler(it->second);
-                if (it->second->once())
-                    it = subscribers->second.erase(it);
-                else
-                    ++it;
-            }
-            if (subscribers->second.empty()) {
-                subscribers_.erase(subscribers);
+        std::vector<message_handler_pointer> rmv;
+        {
+            shared_lock<shared_mutex> lock{mutex_};
+
+            auto it = handlers_.find(topic);
+            if (it != handlers_.end()) {
+                auto &handlers = it->second;
+                for (auto hit = handlers.begin(); hit != handlers.end(); ++hit) {
+                    handler(hit->second);
+                    if (hit->second->once()) {
+                        rmv.push_back(hit->second);
+                    }
+                }
             }
         }
+
+        for (auto it = rmv.begin(); it != rmv.end(); ++it) {
+            unsubscribe(*it);
+        }
+
         return true;
     }
 
     bool do_publish(const message_pointer &ptr)
     {
-        return do_publish(ptr->topic(), [ptr](message_handler_ptr handler) {
-            handler->handle(ptr);
+        return do_publish(ptr->topic(), [ptr](message_handler_pointer handler) {
+            handler->handle_p(ptr);
         });
     }
 
@@ -230,9 +244,9 @@ private:
             return do_publish(ptr);
         }
 
-        return do_publish(ptr->topic(), [this, ptr](message_handler_ptr handler) {
+        return do_publish(ptr->topic(), [this, ptr](message_handler_pointer handler) {
             threads_->enqueue([ptr, handler]{
-                handler->handle(ptr);
+                handler->handle_p(ptr);
             });
         });
     }
@@ -240,14 +254,14 @@ private:
 private:
     std::shared_ptr<ThreadPool> threads_;
     mutable shared_mutex mutex_;
-    std::unordered_map<std::string, message_handlers> subscribers_;
+    std::unordered_map<std::string, message_handlers> handlers_;
 };
 
 class MessageQueue
 {
 public:
-	explicit MessageQueue(size_t threads = std::thread::hardware_concurrency())
-		: threads_{new ThreadPool{threads}} {}
+    explicit MessageQueue(size_t threads = std::thread::hardware_concurrency())
+            : threads_{new ThreadPool{threads}} {}
 
     MessageQueue(MessageQueue&) = delete;
     MessageQueue(MessageQueue&&) = delete;
@@ -264,41 +278,41 @@ public:
     template<typename T>
     bool publish(const typename MessageQueueType<T>::message_pointer &ptr, bool is_async = true)
     {
-		shared_lock<shared_mutex> lock{ mutex_ };
+        shared_lock<shared_mutex> lock{ mutex_ };
         auto qu = get_queue<T>();
-		if (qu) {
-			return qu->publish(ptr, is_async);
-		}
-		return false;
+        if (qu) {
+            return qu->publish(ptr, is_async);
+        }
+        return false;
     }
 
-	template<typename T>
-    int subscribe(typename MessageQueueType<T>::message_handler_ptr handler)
+    template<typename T>
+    std::shared_ptr<IMessageHandler<T>> subscribe(typename MessageQueueType<T>::message_handler_pointer handler)
     {
         unique_lock<shared_mutex> lock{mutex_};
         auto qu = get_queue_default<T>();
-		return qu->subscribe(handler);
+        return qu->subscribe(handler);
     }
 
-	template<typename T>
-    int subscribe(const std::string &topic, typename MessageQueueType<T>::message_handler_fn handler, bool once = false)
+    template<typename T>
+    std::shared_ptr<IMessageHandler<T>> subscribe(const std::string &topic, typename MessageQueueType<T>::message_handler_funtion handler, bool once = false)
     {
-		unique_lock<shared_mutex> lock{ mutex_ };
+        unique_lock<shared_mutex> lock{ mutex_ };
         auto qu = get_queue_default<T>();
-		return qu->subscribe(topic, handler, once);
+        return qu->subscribe(topic, handler, once);
     }
 
-	template<typename T>
+    template<typename T>
     void unsubscribe(int index)
     {
         unique_lock<shared_mutex> lock{mutex_};
         auto qu = get_queue<T>();
-		if (qu) {
-			qu->unsubscribe(index);
-			if (qu->empty()) {
-				queues_.erase(queues_.find(std::type_index(typeid(T))));
-			}
-		}
+        if (qu) {
+            qu->unsubscribe(index);
+            if (qu->empty()) {
+                queues_.erase(queues_.find(std::type_index(typeid(T))));
+            }
+        }
     }
 
 private:
@@ -337,40 +351,45 @@ private:
 };
 
 template<>
-bool MessageQueue::publish<char *>(const std::string &topic, char *value, bool is_async)
+bool MessageQueue::publish<char *>(const typename MessageQueueType<char *>::message_pointer &ptr, bool is_async)
 {
     shared_lock<shared_mutex> lock{ mutex_ };
     auto qu = get_queue<char *>();
     if (qu) {
-        return qu->publish(topic, value, is_async);
+        return qu->publish(ptr, is_async);
     }
 
     auto cqu = get_queue<const char *>();
     if (cqu) {
-        return cqu->publish(topic, value, is_async);
+        auto cptr = std::make_shared<Message<const char *>>(ptr->topic(), ptr->payload());
+        return cqu->publish(cptr, is_async);
     }
 
     auto squ = get_queue<std::string>();
     if (squ) {
-        return squ->publish(topic, value, is_async);
+        auto sptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
+        return squ->publish(sptr, is_async);
     }
 
     return false;
 }
 
 template<>
-bool MessageQueue::publish<const char *>(const std::string &topic, const char *value, bool is_async)
+bool MessageQueue::publish<const char *>(const typename MessageQueueType<const char *>::message_pointer &ptr, bool is_async)
 {
     shared_lock<shared_mutex> lock{ mutex_ };
+
     auto cqu = get_queue<const char *>();
     if (cqu) {
-        return cqu->publish(topic, value, is_async);
+        return cqu->publish(ptr, is_async);
     }
 
     auto squ = get_queue<std::string>();
     if (squ) {
-        return squ->publish(topic, value, is_async);
+        auto sptr = std::make_shared<Message<std::string>>(ptr->topic(), ptr->payload());
+        return squ->publish(sptr, is_async);
     }
 
     return false;
 }
+
