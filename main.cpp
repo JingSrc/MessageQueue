@@ -4,7 +4,14 @@
 
 struct MyEvent
 {
+    MyEvent() = default;
+    MyEvent(int i, const std::string &a) : i{i}, a{a} {}
     virtual ~MyEvent() = default;
+
+    virtual void write(std::ostream &o)
+    {
+        o << "MyEvent{ i = " << i << ", a = " << a << " }";
+    }
 
 	int i{111111};
 	std::string a{"xxxxxxxxxxxxx"};
@@ -12,7 +19,15 @@ struct MyEvent
 
 struct MyDerivedEvent : public MyEvent
 {
+    MyDerivedEvent() = default;
+    MyDerivedEvent(int i, int j, const std::string &a, const std::string &b) : MyEvent{i, a}, j{j}, b{b} {}
     virtual ~MyDerivedEvent() override = default;
+
+    virtual void write(std::ostream &o)
+    {
+        MyEvent::write(o);
+        o << "MyDerivedEvent{ j = " << j << ", a = " << b << " }";
+    }
 
     int j{222222};
     std::string b{"yyyyyyyyyyyyy"};
@@ -37,70 +52,41 @@ public:
 };
 
 int main() {
-    auto threads = std::make_shared<ThreadPool>(5);
-    MessageQueueType<int> mt{threads};
+    using IntQueue = MessageQueue<int>;
+    IntQueue iq;
 
-    auto i1 = mt.subscribe("1", [](const MessagePointer<int> &msg){
+    auto i1 = iq.subscribe("1", [](const IntQueue::message_pointer &msg){
         std::cout << msg->topic() << msg->payload() << std::endl;
     });
-    auto i2 = mt.subscribe("2", [](const MessagePointer<int> &msg){
+    auto i2 = iq.subscribe("2", [](const IntQueue::message_pointer &msg){
         std::cout << msg->topic() << msg->payload() << std::endl;
     });
-    auto i3 = mt.subscribe("3", [](const MessagePointer<int> &msg){
+    auto i3 = iq.subscribe("3", [](const IntQueue::message_pointer &msg){
         std::cout << msg->topic() << msg->payload() << std::endl;
     });
-    auto i4 = mt.subscribe("3", [](const MessagePointer<int> &msg){
+    auto i4 = iq.subscribe("3", [](const IntQueue::message_pointer &msg){
         std::cout << msg->topic() << msg->payload() << std::endl;
     }, true);
 
-    mt.publish("3", 5, false);
-    mt.publish("3", 10, true);
+    iq.publish("3", 5, false);
+    iq.publish("3", 10, true);
+
+    iq.unsubscribe(i1);
+
+    using EventQueue = MessagePointerQueue<MyEvent>;
+    EventQueue eq;
+
+    auto i5 = eq.subscribe("1", [](const EventQueue::message_pointer &msg){
+        std::cout << msg->topic() << " ";
+        msg->payload()->write(std::cout);
+        std::cout << std::endl;
+    });
+
+    eq.publish("1", std::make_shared<MyEvent>(1, "aaa"), true);
+    eq.publish("1", std::make_shared<MyDerivedEvent>(1, 2, "aaa", "bbb"), true);
 
     std::this_thread::sleep_for(std::chrono::seconds(2));
 	std::cout << "=============================" << std::endl;
-
-	MessageQueue qu;
-
-	auto i5 = qu.subscribe<int>("1", [](const MessagePointer<int> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	}, true);
-
-	auto i6 = qu.subscribe<int>("2", [](const MessagePointer<int> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i7 = qu.subscribe<int>("3", [](const MessagePointer<int> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i8 = qu.subscribe<int>("3", [](const MessagePointer<int> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i9 = qu.subscribe<std::string>("3", [](const std::shared_ptr<Message<std::string>> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i10 = qu.subscribe<std::string>("3", [](const std::shared_ptr<Message<std::string>> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i12 = qu.subscribe<double>("3", [](const std::shared_ptr<Message<double>> &msg) {
-		std::cout << msg->topic() << msg->payload() << std::endl;
-	});
-
-	auto i13 = qu.subscribe<std::shared_ptr<MyEvent>>(std::make_shared<MyMessage>());
-
-	qu.publish("3", 5, false);
-	qu.publish("3", 10, true);
-	qu.publish("3", 10.12, true);
-	qu.publish("3", "abcde", true);
-	qu.publish("abc", std::make_shared<MyEvent>(), true);
-
-    auto mydev = std::make_shared<MyDerivedEvent>();
-    qu.publish("abc", std::dynamic_pointer_cast<MyEvent>(mydev), true);
-
-    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     return 0;
 }
