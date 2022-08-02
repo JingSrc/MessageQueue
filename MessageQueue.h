@@ -222,3 +222,5 @@ private:
     std::unordered_map<std::string, message_handlers> handlers_;
 };
 
+template <typename T>
+using MessagePointerQueue = MessageQueue<std::shared_ptr<T>>;
