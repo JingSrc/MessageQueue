@@ -92,6 +92,8 @@ private:
 template<typename _shared_mutex>
 using shared_lock = std::shared_lock<_shared_mutex>;
 
+using shared_mutex = std::shared_mutex;
+
 #endif
 
 template<typename _shared_mutex>
