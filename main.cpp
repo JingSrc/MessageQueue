@@ -4,15 +4,15 @@ int main() {
     message_queue_t mq;
     mq.subscribe("111", [](const std::string &topic, const message_queue_t::message_type &message){
         static int i = 0;
-        std::cout << i++ << " " <<  message.value<std::string>() << std::endl;
+        std::cout << i++ << " " <<  std::any_cast<std::string>(message) << std::endl;
     });
     mq.subscribe("222", [](const std::string &topic, const message_queue_t::message_type &message){
         static int i = 0;
-        std::cout << i++ << " " <<  message.value<std::string>() << std::endl;
+        std::cout << i++ << " " <<  std::any_cast<std::string>(message) << std::endl;
     });
     mq.subscribe("222", [](const std::string &topic, const message_queue_t::message_type &message){
         static int i = 0;
-        std::cout << i++ << " " <<  message.value<std::string>() << std::endl;
+        std::cout << i++ << " " <<  std::any_cast<std::string>(message) << std::endl;
     }, true);
 
     for (int i = 0; i < 10; ++i) {
