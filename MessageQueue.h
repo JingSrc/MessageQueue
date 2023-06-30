@@ -94,8 +94,11 @@ namespace std
         _shared_mutex *rw_mutex_ = nullptr;
     };
 
+    class any_cast_t;
+
     class any
     {
+        friend class any_cast_t;
         template <typename T> using decay_type = typename std::decay<T>::type;
     public:
         any() = default;
@@ -138,6 +141,7 @@ namespace std
         }
         bool has_value() const { return data_ == nullptr; }
 
+    private:
         template <typename T>
         const T &value() const {
             return static_cast<const internal_data_impl<T> *>(data_.get())->data_;
@@ -147,7 +151,6 @@ namespace std
             return static_cast<internal_data_impl<T> *>(data_.get())->data_;
         }
 
-    private:
         class internal_data
         {
         public:
@@ -179,14 +182,30 @@ namespace std
         std::unique_ptr<internal_data> data_;
     };
 
+    class any_cast_t
+    {
+    public:
+        template<typename T>
+        const T &any_cast(const any &a) {
+            return a.value<T>();
+        }
+
+        template<typename T>
+        T &any_cast(any &a) {
+            return a.value<T>();
+        }
+    };
+
     template<typename T>
     const T &any_cast(const any &a) {
-        return a.value<T>();
+        any_cast_t ac;
+        return ac.any_cast<T>(a);
     }
 
     template<typename T>
     T &any_cast(any &a) {
-        return a.value<T>();
+        any_cast_t ac;
+        return ac.any_cast<T>(a);
     }
 }
 #else
@@ -309,7 +328,8 @@ private:
 
         template<class F, class... Args>
         void push(F&& f, Args&&... args) {
-            auto task = std::make_shared<std::packaged_task<void()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+            auto task = std::make_shared<std::packaged_task<void()>>(std::bind(std::forward<F>(f),
+                                                                               std::forward<Args>(args)...));
             {
                 std::unique_lock<std::mutex> lock{ mutex_ };
                 if (stop_) {
@@ -364,16 +384,18 @@ public:
     using message_handle = unsigned long long;
 
 private:
-    class handler_chain
+    class handler_chain_t
     {
     public:
         using handler_type = std::function<void(const std::string&, message_type&)>;
 
-        explicit handler_chain(const std::string &topic, std::shared_ptr<thread_pool_t> &threads, std::atomic<message_handle> &idx)
+        explicit handler_chain_t(const std::string &topic,
+                                 std::shared_ptr<thread_pool_t> &threads,
+                                 std::atomic<message_handle> &idx)
             : topic_{ topic }, threads_{ threads }, idx_{ idx } {
             threads->add_group(topic);
         }
-        ~handler_chain() {
+        ~handler_chain_t() {
             threads_->remove_group(topic_);
         }
 
@@ -405,7 +427,7 @@ private:
             if (sync) {
                 do_publish(m);
             } else {
-                threads_->push_to_group(topic_, &handler_chain::do_publish, this, m);
+                threads_->push_to_group(topic_, &handler_chain_t::do_publish, this, m);
             }
         }
 
@@ -482,7 +504,7 @@ public:
         }
     }
 
-    message_handle subscribe(const std::string &topic, handler_chain::handler_type handler, bool once = false) {
+    message_handle subscribe(const std::string &topic, handler_chain_t::handler_type handler, bool once = false) {
         std::unique_lock<std::shared_mutex> lock{ mutex_ };
 
         message_handle handle;
@@ -490,7 +512,7 @@ public:
         if (it != handlers_.end()) {
             handle = it->second->add_handler(handler, once);
         } else {
-            auto h = std::make_shared<handler_chain>(topic, threads_, curr_);
+            auto h = std::make_shared<handler_chain_t>(topic, threads_, curr_);
             handle = h->add_handler(handler, once);
             handlers_[topic] = std::move(h);
         }
@@ -514,5 +536,5 @@ private:
     mutable std::shared_mutex mutex_;
     std::shared_ptr<thread_pool_t> threads_;
     std::atomic<message_handle> curr_;
-    std::unordered_map<std::string, std::shared_ptr<handler_chain>> handlers_;
+    std::unordered_map<std::string, std::shared_ptr<handler_chain_t>> handlers_;
 };
