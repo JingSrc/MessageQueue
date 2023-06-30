@@ -3,7 +3,7 @@ project(mq)
 
 set(CMAKE_CXX_STANDARD 11)
 
-add_executable(mq main.cpp MessageQueue.h SharedMutex.h ThreadPool.h)
+add_executable(mq main.cpp MessageQueue.h)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
