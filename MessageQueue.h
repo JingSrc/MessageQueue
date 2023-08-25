@@ -317,9 +317,14 @@ private:
             thread_ = std::move(thd);
         }
         ~thread_worker() {
-            stop_ = true;
+            {
+                std::unique_lock<std::mutex> lock{ mutex_ };
+                stop_ = true;
+            }
             cond_.notify_all();
-            thread_.join();
+            if (thread_.joinable()) {
+                thread_.join();
+            }
         }
 
         inline int task_size() const {
