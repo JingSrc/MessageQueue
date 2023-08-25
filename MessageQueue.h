@@ -389,7 +389,7 @@ public:
     using message_handle = unsigned long long;
 
 private:
-    class handler_chain_t
+    class handler_chain_t : std::enable_shared_from_this<handler_chain_t>
     {
     public:
         using handler_type = std::function<void(const std::string&, message_type&)>;
@@ -432,7 +432,7 @@ private:
             if (sync) {
                 do_publish(m);
             } else {
-                threads_->push_to_group(topic_, &handler_chain_t::do_publish, this, m);
+                threads_->push_to_group(topic_, &handler_chain_t::do_publish, shared_from_this(), m);
             }
         }
 
