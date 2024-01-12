@@ -210,6 +210,7 @@ namespace std
 }
 #else
 #include <shared_mutex>
+#include <any>
 #endif
 
 class thread_pool_t
